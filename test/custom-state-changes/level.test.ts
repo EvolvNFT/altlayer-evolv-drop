@@ -91,16 +91,12 @@ describe("rollup", function () {
             );
 
             const data = ethers.utils.AbiCoder.prototype.encode(
-              ["tuple(bytes, bytes)"],
+              ["tuple(bytes32, bytes)"],
               [[k, v]]
             );
 
             return data;
           },
-        },
-        {
-          event: "BlockNumber",
-          data: async () => undefined, // ignore data
         },
       ];
 
@@ -134,7 +130,7 @@ describe("rollup", function () {
             );
 
             const data = ethers.utils.AbiCoder.prototype.encode(
-              ["tuple(bytes, bytes)"],
+              ["tuple(bytes32, bytes)"],
               [[k, v]]
             );
 
@@ -175,23 +171,27 @@ describe("rollup", function () {
     expect(resourceId).to.equal(rollupResourceID);
     expect(destDomainId).to.equal(l1DomainID);
 
-    const { merkleTree, encodedStates } = constructMerkleTree(pairs, batchSize);
-    const rootHash = merkleTree.getHexRoot();
+    const { merkleTree, values, hashedValues } = constructMerkleTree(
+      pairs,
+      batchSize
+    );
+    const root = merkleTree.getHexRoot();
 
     const paramsList = [];
-    for (const encoded of encodedStates) {
-      const proof = merkleTree.getHexProof(keccak256(encoded));
+
+    for (const [i, value] of values.entries()) {
+      const proof = merkleTree.getHexProof(hashedValues[i]);
+
       paramsList.push({
-        l2DomainID,
         rollupResourceID,
         nonce,
         proof,
-        rootHash,
-        encoded,
+        root,
+        value,
       });
     }
 
-    for (const [, params] of paramsList.entries()) {
+    for (const params of paramsList) {
       const tx = await L1ERC721MintableInstance.finalizeRollup(
         ...Object.values(params)
       );

@@ -111,13 +111,10 @@ contract L2ERC721Token is L2ERC721 {
         uint256 level = levels[tokenId] + 1;
         levels[tokenId] = level;
 
-        StateContext memory ctx = _getWriteContext();
-        _emitStateChange(
-            ctx,
-            abi.encode(tokenId),
+        _createStateChange(
+            bytes32(tokenId),
             abi.encode(ownerOf(tokenId), level)
         );
-        _saveContext(ctx);
     }
 
     function _afterTokenTransfer(
@@ -126,13 +123,10 @@ contract L2ERC721Token is L2ERC721 {
         uint256 tokenId,
         uint256
     ) internal virtual override {
-        StateContext memory ctx = _getWriteContext();
-        _emitStateChange(
-            ctx,
-            abi.encode(tokenId),
+        _createStateChange(
+            bytes32(tokenId),
             abi.encode(to, levels[tokenId])
         );
-        _saveContext(ctx);
     }
 }
 

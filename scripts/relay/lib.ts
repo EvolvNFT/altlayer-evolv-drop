@@ -4,16 +4,134 @@ import { ethers } from "ethers";
 import { MerkleTree } from "merkletreejs";
 import keccak256 from "keccak256";
 
-import L2_ERC721_ABI from "./abi/ERC721PresetL2.json";
-
 export const EMPTY_BYTES32 =
   "0x0000000000000000000000000000000000000000000000000000000000000000";
+
+export enum PROPOSAL_STATUS {
+  // eslint-disable-next-line no-unused-vars
+  Inactive,
+  // eslint-disable-next-line no-unused-vars
+  Active,
+  // eslint-disable-next-line no-unused-vars
+  Passed,
+  // eslint-disable-next-line no-unused-vars
+  Executed,
+  // eslint-disable-next-line no-unused-vars
+  Cancelled,
+}
+
+const l2LibABI = [
+  {
+    anonymous: false,
+    inputs: [
+      {
+        indexed: false,
+        internalType: "uint64",
+        name: "destDomainID",
+        type: "uint64",
+      },
+      {
+        indexed: false,
+        internalType: "bytes32",
+        name: "resourceID",
+        type: "bytes32",
+      },
+      {
+        indexed: false,
+        internalType: "uint64",
+        name: "epoch",
+        type: "uint64",
+      },
+      {
+        indexed: false,
+        internalType: "uint64",
+        name: "batchSize",
+        type: "uint64",
+      },
+      {
+        indexed: false,
+        internalType: "uint256",
+        name: "startBlock",
+        type: "uint256",
+      },
+      {
+        indexed: false,
+        internalType: "bytes32",
+        name: "stateChangeHash",
+        type: "bytes32",
+      },
+    ],
+    name: "Rollup",
+    type: "event",
+  },
+
+  {
+    inputs: [
+      {
+        internalType: "uint64",
+        name: "epoch_",
+        type: "uint64",
+      },
+      {
+        internalType: "uint256",
+        name: "startID",
+        type: "uint256",
+      },
+      {
+        internalType: "uint256",
+        name: "querySize",
+        type: "uint256",
+      },
+    ],
+    name: "stateChanges",
+    outputs: [
+      {
+        components: [
+          {
+            internalType: "bytes",
+            name: "key",
+            type: "bytes32",
+          },
+          {
+            internalType: "bytes",
+            name: "value",
+            type: "bytes",
+          },
+        ],
+        internalType: "struct KeyValuePair[]",
+        name: "",
+        type: "tuple[]",
+      },
+    ],
+    stateMutability: "view",
+    type: "function",
+  },
+  {
+    inputs: [
+      {
+        internalType: "uint64",
+        name: "epoch_",
+        type: "uint64",
+      },
+    ],
+    name: "totalStateChanges",
+    outputs: [
+      {
+        internalType: "uint256",
+        name: "",
+        type: "uint256",
+      },
+    ],
+    stateMutability: "view",
+    type: "function",
+  },
+];
 
 export const getL2StateChanges = async (
   l2Provider,
   l2EventTxHash,
   isBridge = true,
-  batchQuerySize = 5000,
+  querySize = 25n,
   retryIntervalInMs = 1000,
   retries = 5
 ) => {
@@ -21,6 +139,17 @@ export const getL2StateChanges = async (
   const receipt = await tx.wait();
 
   const rollupEventName = isBridge ? "InitiateRollup" : "Rollup";
+
+  const tokenRollupEvent = receipt.logs.find(
+    (x) =>
+      x.topics[0] ===
+      ethers.utils.id(`Rollup(uint64,bytes32,uint64,uint64,uint256,bytes32)`)
+  );
+
+  const [, , epoch, , ,] = ethers.utils.AbiCoder.prototype.decode(
+    ["uint64", "bytes32", "uint64", "uint64", "uint256", "bytes32"],
+    tokenRollupEvent.data
+  );
 
   const event = receipt.logs.find(
     (x) =>
@@ -30,91 +159,44 @@ export const getL2StateChanges = async (
       )
   );
 
-  const endBlock = ethers.BigNumber.from(event.blockNumber);
-
-  const [
-    destDomainId,
-    resourceId,
-    nonce,
-    batchSizeBigNum,
-    startBlock,
-    stateChangeHash,
-  ] = ethers.utils.AbiCoder.prototype.decode(
-    ["uint64", "bytes32", "uint64", "uint64", "uint256", "bytes32"],
-    event.data
-  );
+  const [destDomainId, resourceId, nonce, batchSizeBigNum, ,] =
+    ethers.utils.AbiCoder.prototype.decode(
+      ["uint64", "bytes32", "uint64", "uint64", "uint256", "bytes32"],
+      event.data
+    );
 
   const batchSize = Number(batchSizeBigNum.toString());
   const tokenAddress = tx.to;
 
   console.log("L2 Token Address:", tokenAddress);
   console.log("Batch Size:", batchSize);
-  console.log("Start Block:", startBlock.toString());
-  console.log("End Block:", endBlock.toString());
 
-  const contract = new ethers.Contract(tokenAddress, L2_ERC721_ABI, l2Provider);
+  const contract = new ethers.Contract(tokenAddress, l2LibABI, l2Provider);
 
   let stateChanges = [];
 
-  let start = startBlock;
-  while (start.lt(endBlock)) {
-    const limit = start.add(batchQuerySize).sub(1);
-    const end = limit.gt(endBlock) ? endBlock : limit;
+  const totalStateChanges = await contract.totalStateChanges(epoch);
 
-    console.log(`Query from ${start.toString()} to ${end.toString()}`);
+  console.log("Expected Total State Changes", totalStateChanges.toString());
 
+  let i = 0n;
+
+  while (totalStateChanges.gte(i)) {
+    const args = [epoch, i, querySize].map((x) => x.toString());
     await runWithRetries(
       async () => {
-        const chunkedStateChanges = await contract.queryFilter(
-          contract.filters.StateChange(),
-          start.toHexString(),
-          end.toHexString()
-        );
-        console.log(stateChanges.length);
-
-        stateChanges = [...stateChanges, ...chunkedStateChanges];
-        start = end.add(1);
+        const states = await contract.stateChanges(...args);
+        stateChanges = [...stateChanges, ...states];
       },
       retryIntervalInMs,
       retries
     );
+    i += querySize;
   }
 
-  stateChanges = stateChanges.map((x) => x.args[0]);
+  console.log("Actual Total State Changes:", stateChanges.length);
 
-  console.log("Total State Changes:", stateChanges.length);
-
-  stateChanges.reduce((acc, cur) => {
-    const [k, v] = cur;
-    acc[k] = v;
-    return acc;
-  }, {});
-
-  // Validate state changes
-  const actualStateChangeHash = stateChanges.reduce((acc, cur) => {
-    const [k, v] = cur;
-    const state = ethers.utils.AbiCoder.prototype.encode(
-      ["bytes32", "tuple(bytes, bytes)"],
-      [acc, [k, v]]
-    );
-
-    const result = "0x" + keccak256(state).toString("hex");
-    return result;
-  }, EMPTY_BYTES32);
-
-  if (stateChangeHash !== actualStateChangeHash) {
-    throw Error(
-      `invalid state change hash\nexpected:${stateChangeHash}\ngot: ${actualStateChangeHash}`
-    );
-  }
-
-  const finalState = stateChanges.reduce((acc, cur) => {
-    const [k, v] = cur;
-    acc[k] = v;
-    return acc;
-  }, {});
-
-  const pairs = Object.entries(finalState).sort((a, b) =>
+  const pairs = stateChanges.sort((a, b) =>
     ethers.BigNumber.from(a[0]).lt(ethers.BigNumber.from(b[0])) ? -1 : 1
   );
 
@@ -122,28 +204,29 @@ export const getL2StateChanges = async (
 };
 
 export const constructMerkleTree = (pairs, batchSize) => {
-  const batches = [];
+  const chunks = [];
   for (let i = 0; i < pairs.length; i += batchSize) {
-    batches.push(pairs.slice(i, i + batchSize));
+    chunks.push(pairs.slice(i, i + batchSize));
   }
 
-  const encodedStates = [];
-  const leaves = [];
+  const values = [];
+  const hashedValues = [];
 
-  for (const [batchIndex, batch] of batches.entries()) {
-    const encodedState = ethers.utils.AbiCoder.prototype.encode(
-      ["uint64", "tuple(bytes,bytes)[]"],
-      [batchIndex, batch]
+  for (const [i, v] of chunks.entries()) {
+    const value = ethers.utils.AbiCoder.prototype.encode(
+      ["uint64", "tuple(bytes32,bytes)[]"],
+      [i, v]
     );
-    encodedStates.push(encodedState);
-    leaves.push("0x" + keccak256(encodedState).toString("hex"));
+    values.push(value);
+    const hashedValue = keccak256(value);
+    hashedValues.push(hashedValue.toString("hex"));
   }
 
-  const merkleTree = new MerkleTree(leaves, keccak256, {
+  const merkleTree = new MerkleTree(hashedValues, keccak256, {
     sortPairs: true,
   });
 
-  return { merkleTree, encodedStates };
+  return { merkleTree, values, hashedValues };
 };
 
 export const waitFor = (ms) => {

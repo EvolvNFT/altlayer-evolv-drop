@@ -25,7 +25,7 @@ contract L1ERC721Token is L1ERC721 {
         string memory ext
     ) public initializer {
         __L1ERC721_init(name, symbol);
-        setBridge(bridgeAddress);
+        _setupRole(ROLLUP_ADMIN_ROLE, bridgeAddress);
         setBaseURI(baseURI, ext);
     }
 
@@ -52,7 +52,7 @@ contract L1ERC721Token is L1ERC721 {
         // Use a local variable to hold the loop computation result.
         uint256 curBurnCount = 0;
         for (uint256 i = 0; i < pairs.length; i++) {
-            uint256 tokenId = abi.decode(pairs[i].key, (uint256));
+            uint256 tokenId = uint256(pairs[i].key);
             (address account, uint256 level) = abi.decode(
                 pairs[i].value,
                 (address, uint256)
